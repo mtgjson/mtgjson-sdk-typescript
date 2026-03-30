@@ -14,7 +14,14 @@ export class BoosterSimulator {
 	}
 
 	private async _ensure(): Promise<void> {
-		await this._conn.ensureViews("sets", "cards");
+		await this._conn.ensureViews(
+			"sets",
+			"cards",
+			"set_booster_content_weights",
+			"set_booster_contents",
+			"set_booster_sheet_cards",
+			"set_booster_sheets",
+		);
 	}
 
 	private async _getBoosterConfig(
@@ -22,21 +29,121 @@ export class BoosterSimulator {
 	): Promise<Record<string, BoosterConfig> | null> {
 		await this._ensure();
 		try {
-			const rows = await this._conn.execute(
-				"SELECT booster FROM sets WHERE code = $1",
+			const setBoosterContentWeightsRows = await this._conn.execute(
+				"SELECT * FROM set_booster_content_weights WHERE setCode = $1",
 				[setCode.toUpperCase()],
 			);
-			if (!rows.length || !rows[0].booster) return null;
-			return rows[0].booster as Record<string, BoosterConfig>;
+			if (!setBoosterContentWeightsRows.length) return null;
+
+			const boosterWeights = new Map<string, Map<number, number>>();
+			for (const row of setBoosterContentWeightsRows) {
+				const name = row.boosterName as string;
+				const index = Number(row.boosterIndex);
+				const weight = Number(row.boosterWeight);
+
+				if (!boosterWeights.has(name)) {
+					boosterWeights.set(name, new Map());
+				}
+				boosterWeights.get(name)!.set(index, weight);
+			}
+
+			const setBoosterContentRows = await this._conn.execute(
+				"SELECT * FROM set_booster_contents WHERE setCode = $1",
+				[setCode.toUpperCase()],
+			);
+
+			if (!setBoosterContentRows.length) return null;
+
+			const boostersByName: Record<string, Map<number, BoosterPack>> = {};
+
+			for (const row of setBoosterContentRows) {
+				const name = row.boosterName as string;
+				const index = Number(row.boosterIndex);
+				const sheetName = row.sheetName as string;
+				const sheetPicks = Number(row.sheetPicks);
+
+				if (!boostersByName[name]) {
+					boostersByName[name] = new Map();
+				}
+
+				const boosterIndexMap = boostersByName[name];
+				if (!boosterIndexMap.has(index)) {
+					const weight = boosterWeights.get(name)?.get(index) ?? 0;
+					boosterIndexMap.set(index, { contents: {}, weight });
+				}
+
+				const booster = boosterIndexMap.get(index)!;
+				booster.contents[sheetName] = sheetPicks;
+			}
+
+			const config: Record<string, BoosterConfig> = {};
+			for (const [name, boosterIndexMap] of Object.entries(boostersByName)) {
+				config[name] = {
+					boosters: Array.from(boosterIndexMap.values()),
+					boostersTotalWeight: Array.from(boosterIndexMap.values()).reduce(
+						(sum, b) => sum + b.weight,
+						0,
+					),
+					sheets: {},
+					sourceSetCodes: [],
+				};
+			}
+
+			const setBoosterSheetsRows = await this._conn.execute(
+				"SELECT * FROM set_booster_sheets WHERE setCode = $1",
+				[setCode.toUpperCase()],
+			);
+
+			const setBoosterSheetCardsRows = await this._conn.execute(
+				"SELECT * FROM set_booster_sheet_cards WHERE setCode = $1",
+				[setCode.toUpperCase()],
+			);
+
+			for (const row of setBoosterSheetsRows) {
+				const boosterName = row.boosterName as string;
+				const sheetName = row.sheetName as string;
+
+				if (config[boosterName]) {
+					const cards: Record<string, number> = {};
+					for (const cardRow of setBoosterSheetCardsRows) {
+						if (
+							cardRow.boosterName === boosterName &&
+							cardRow.sheetName === sheetName
+						) {
+							cards[cardRow.cardUuid as string] = Number(cardRow.cardWeight);
+						}
+					}
+
+					config[boosterName].sheets[sheetName] = {
+						allowDuplicates: true, // Not in data
+						balanceColors: Boolean(row.sheetHasBalanceColors),
+						cards,
+						foil: Boolean(row.sheetIsFoil),
+						totalWeight: Number(row.sheetTotalWeight),
+					};
+				}
+			}
+
+			return config;
 		} catch {
 			return null;
 		}
 	}
 
+	async getBoosterData(
+        setCode: string,
+    ): Promise<Record<string, BoosterConfig> | null> {
+        return this._getBoosterConfig(setCode);
+    }
+	
 	async availableTypes(setCode: string): Promise<string[]> {
-		const config = await this._getBoosterConfig(setCode);
-		if (!config) return [];
-		return Object.keys(config);
+		await this._ensure();
+		const rows = await this._conn.execute(
+			"SELECT DISTINCT boosterName FROM set_booster_contents WHERE setCode = $1",
+			[setCode.toUpperCase()],
+		);
+
+		return rows.map((row) => row.boosterName as string);
 	}
 
 	async openPack(setCode: string, boosterType = "draft"): Promise<CardSet[]> {

@@ -1294,7 +1294,7 @@ async function main(): Promise<boolean> {
 
 	// openPack — expect error or graceful fail with flat parquet
 	try {
-		const pack = await sdk.booster.openPack("MH3", "draft");
+		const pack = await sdk.booster.openPack("MH3", "play");
 		check("booster.openPack", Array.isArray(pack), `got ${pack.length} cards`);
 	} catch {
 		check("booster.openPack raises Error (no booster data)", true);
@@ -1302,14 +1302,14 @@ async function main(): Promise<boolean> {
 
 	// openBox — expect error or graceful fail
 	try {
-		const box = await sdk.booster.openBox("MH3", "draft", 1);
+		const box = await sdk.booster.openBox("MH3", "play", 1);
 		check("booster.openBox", Array.isArray(box));
 	} catch {
 		check("booster.openBox raises Error (no booster data)", true);
 	}
 
 	// sheetContents
-	const contents = await sdk.booster.sheetContents("MH3", "draft", "common");
+	const contents = await sdk.booster.sheetContents("MH3", "play", "common");
 	check(
 		"booster.sheetContents",
 		contents === null || typeof contents === "object",
